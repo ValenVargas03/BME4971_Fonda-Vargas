@@ -1,0 +1,394 @@
+//OsteoStretch 
+//this code is performing uniaxial/bidirectional cyclic stretching motion. It assumes use of an Arduino/Elegoo Uno microcontroller, 
+// a motor driver, and an LCD display with command buttons where the user can adjust step ( to modulate how long you wnat the stretch
+// to be), frequency (in Hz, which will be calculated in the code the needed time delay within the step to achieve), and duration of the 
+// experiment. Finally the LCD display will showcase the amount of cycles that have been completed as well as the time the experiment 
+// has been running for real time. Additionally, the code is set to include Red and Green led lights that indicate wether the system 
+// is running or if it has stopped/error. 
+
+
+#include <LiquidCrystal.h>
+
+
+LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
+
+
+// -------------------------
+// Pins
+// -------------------------
+const int STEP_PIN = A1;
+const int DIR_PIN  = A2;
+
+
+const int GREEN_LED = A3;
+const int RED_LED   = A4;
+
+
+// Your working motion directions
+const bool DIR_BACKWARD = LOW;
+const bool DIR_FORWARD  = HIGH;
+
+
+// -------------------------
+// Button definitions
+// -------------------------
+#define btnRIGHT  0
+#define btnUP     1
+#define btnDOWN   2
+#define btnLEFT   3
+#define btnSELECT 4
+#define btnNONE   5
+
+
+// -------------------------
+// User-adjustable settings
+// -------------------------
+long stretchSteps = 200;
+float targetFrequencyHz = 0.5;
+int durationMinutes = 1;
+
+
+// fixed pause at each end
+int endPauseMs = 300;
+
+
+// internally calculated
+int stepDelayMicros = 2500;
+
+
+// -------------------------
+// State
+// -------------------------
+int menuIndex = 0;   // 0=STEPS, 1=FREQ, 2=DURATION, 3=RUN
+bool running = false;
+
+
+// -------------------------
+// Read buttons (calibrated to your shield)
+// -------------------------
+int read_LCD_buttons() {
+ int adc_key_in = analogRead(A0);
+
+
+ if (adc_key_in > 1000) return btnNONE;
+ if (adc_key_in < 50)   return btnRIGHT;
+ if (adc_key_in < 180)  return btnUP;
+ if (adc_key_in < 330)  return btnDOWN;
+ if (adc_key_in < 520)  return btnLEFT;
+ if (adc_key_in < 800)  return btnSELECT;
+
+
+ return btnNONE;
+}
+
+
+void waitForRelease() {
+ while (read_LCD_buttons() != btnNONE) {
+   delay(10);
+ }
+ delay(120);
+}
+
+
+// -------------------------
+// Frequency-to-delay conversion
+// -------------------------
+void updateStepDelayFromFrequency() {
+ // Total cycle time in microseconds = 1/frequency
+ float cycleTimeUs = 1000000.0 / targetFrequencyHz;
+
+
+ // subtract fixed pauses at both ends
+ float motionTimeUs = cycleTimeUs - (2.0 * endPauseMs * 1000.0);
+
+
+ // avoid invalid/negative values
+ if (motionTimeUs < 4.0 * stretchSteps * 300.0) {
+   motionTimeUs = 4.0 * stretchSteps * 300.0;
+ }
+
+
+ // Solve for delayMicroseconds per half pulse
+ stepDelayMicros = (int)(motionTimeUs / (4.0 * stretchSteps));
+
+
+ // clamp to a safe range
+ if (stepDelayMicros < 300) stepDelayMicros = 300;
+ if (stepDelayMicros > 10000) stepDelayMicros = 10000;
+}
+
+
+float getActualFrequencyHz() {
+ float cycle_us = (4.0 * stretchSteps * stepDelayMicros) + (2.0 * endPauseMs * 1000.0);
+ if (cycle_us <= 0.0) return 0.0;
+ return 1000000.0 / cycle_us;
+}
+
+
+// -------------------------
+// Motor functions
+// -------------------------
+void moveSteps(long numSteps, bool dir) {
+ digitalWrite(DIR_PIN, dir);
+ delay(300);  // reliable direction settling
+
+
+ for (long i = 0; i < numSteps; i++) {
+   digitalWrite(STEP_PIN, HIGH);
+   delayMicroseconds(stepDelayMicros);
+   digitalWrite(STEP_PIN, LOW);
+   delayMicroseconds(stepDelayMicros);
+ }
+}
+
+
+// -------------------------
+// LCD menu
+// -------------------------
+void showMenu() {
+ lcd.clear();
+
+
+ switch (menuIndex) {
+   case 0:
+     lcd.setCursor(0, 0);
+     lcd.print(">STEPS");
+     lcd.setCursor(0, 1);
+     lcd.print(stretchSteps);
+     lcd.print(" steps");
+     break;
+
+
+   case 1:
+     lcd.setCursor(0, 0);
+     lcd.print(">FREQ");
+     lcd.setCursor(0, 1);
+     lcd.print(targetFrequencyHz, 1);
+     lcd.print(" Hz");
+     break;
+
+
+   case 2:
+     lcd.setCursor(0, 0);
+     lcd.print(">DURATION");
+     lcd.setCursor(0, 1);
+     lcd.print(durationMinutes);
+     lcd.print(" min");
+     break;
+
+
+   case 3:
+     lcd.setCursor(0, 0);
+     lcd.print(">RUN");
+     lcd.setCursor(0, 1);
+     lcd.print("Act:");
+     lcd.print(getActualFrequencyHz(), 2);
+     lcd.print("Hz");
+     break;
+ }
+}
+
+
+// -------------------------
+// Setup
+// -------------------------
+void setup() {
+ for (int i = 4; i < 10; i++) {
+   pinMode(i, OUTPUT);
+ }
+
+
+ pinMode(STEP_PIN, OUTPUT);
+ pinMode(DIR_PIN, OUTPUT);
+ pinMode(GREEN_LED, OUTPUT);
+ pinMode(RED_LED, OUTPUT);
+
+
+ digitalWrite(STEP_PIN, LOW);
+ digitalWrite(DIR_PIN, LOW);
+ digitalWrite(GREEN_LED, LOW);
+ digitalWrite(RED_LED, HIGH);
+
+
+ lcd.begin(16, 2);
+
+
+ updateStepDelayFromFrequency();
+
+
+ lcd.clear();
+ lcd.setCursor(0, 0);
+ lcd.print("OsteoStretch");
+ lcd.setCursor(0, 1);
+ lcd.print("Freq control");
+ delay(1200);
+
+
+ showMenu();
+}
+
+
+// -------------------------
+// Main loop
+// -------------------------
+void loop() {
+ if (!running) {
+   int button = read_LCD_buttons();
+
+
+   if (button == btnRIGHT) {
+     menuIndex++;
+     if (menuIndex > 3) menuIndex = 0;
+     showMenu();
+     waitForRelease();
+   }
+
+
+   if (button == btnLEFT) {
+     menuIndex--;
+     if (menuIndex < 0) menuIndex = 3;
+     showMenu();
+     waitForRelease();
+   }
+
+
+   if (button == btnUP) {
+     if (menuIndex == 0) {
+       stretchSteps += 50;
+       if (stretchSteps > 5000) stretchSteps = 5000;
+     }
+     else if (menuIndex == 1) {
+       targetFrequencyHz += 0.1;
+       if (targetFrequencyHz > 2.0) targetFrequencyHz = 2.0;
+     }
+     else if (menuIndex == 2) {
+       durationMinutes += 1;
+       if (durationMinutes > 240) durationMinutes = 240;
+     }
+
+
+     updateStepDelayFromFrequency();
+     showMenu();
+     waitForRelease();
+   }
+
+
+   if (button == btnDOWN) {
+     if (menuIndex == 0) {
+       stretchSteps -= 50;
+       if (stretchSteps < 50) stretchSteps = 50;
+     }
+     else if (menuIndex == 1) {
+       targetFrequencyHz -= 0.1;
+       if (targetFrequencyHz < 0.1) targetFrequencyHz = 0.1;
+     }
+     else if (menuIndex == 2) {
+       durationMinutes -= 1;
+       if (durationMinutes < 1) durationMinutes = 1;
+     }
+
+
+     updateStepDelayFromFrequency();
+     showMenu();
+     waitForRelease();
+   }
+
+
+   if (button == btnSELECT && menuIndex == 3) {
+     running = true;
+     waitForRelease();
+   }
+ }
+
+
+ if (running) {
+ digitalWrite(GREEN_LED, HIGH);
+ digitalWrite(RED_LED, LOW);
+
+
+ unsigned long totalRunMs = (unsigned long)durationMinutes * 60UL * 1000UL;
+ unsigned long startTime = millis();
+
+
+ long cycleCount = 0;
+
+
+ lcd.clear();
+ lcd.setCursor(0, 0);
+ lcd.print("Running...");
+ delay(500);
+
+
+ while (millis() - startTime < totalRunMs) {
+
+
+   // -------- BACKWARD --------
+   moveSteps(stretchSteps, DIR_BACKWARD);
+   delay(endPauseMs);
+
+
+   // -------- FORWARD --------
+   moveSteps(stretchSteps, DIR_FORWARD);
+   delay(endPauseMs);
+
+
+   cycleCount++;
+
+
+   // -------- UPDATE DISPLAY --------
+   unsigned long elapsedMs = millis() - startTime;
+   int seconds = (elapsedMs / 1000) % 60;
+   int minutes = (elapsedMs / 60000);
+
+
+   lcd.setCursor(0, 1);
+
+
+   // format: T:MM:SS C:##
+   lcd.print("T:");
+
+
+   if (minutes < 10) lcd.print("0");
+   lcd.print(minutes);
+   lcd.print(":");
+
+
+   if (seconds < 10) lcd.print("0");
+   lcd.print(seconds);
+
+
+   lcd.print(" C:");
+   lcd.print(cycleCount);
+
+
+   // clear trailing characters if count shrinks
+   lcd.print("   ");
+
+
+   // -------- STOP CHECK --------
+   if (read_LCD_buttons() == btnSELECT) {
+     waitForRelease();
+     break;
+   }
+ }
+
+
+ digitalWrite(GREEN_LED, LOW);
+ digitalWrite(RED_LED, HIGH);
+
+
+ lcd.clear();
+ lcd.setCursor(0, 0);
+ lcd.print("Finished");
+ lcd.setCursor(0, 1);
+ lcd.print("Cycles:");
+ lcd.print(cycleCount);
+ delay(1500);
+
+
+ running = false;
+ showMenu();
+
+
+}
+}
