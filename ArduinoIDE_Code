@@ -1,10 +1,10 @@
 //OsteoStretch 
 //this code is performing uniaxial/bidirectional cyclic stretching motion. It assumes use of an Arduino/Elegoo Uno microcontroller, 
-// a motor driver, and an LCD display with command buttons where the user can adjust step ( to modulate how long you wnat the stretch
+// a motor driver, stepper motor, and an LCD display with command buttons where the user can adjust strain (to modulate how long you wnat the stretch
 // to be), frequency (in Hz, which will be calculated in the code the needed time delay within the step to achieve), and duration of the 
 // experiment. Finally the LCD display will showcase the amount of cycles that have been completed as well as the time the experiment 
-// has been running for real time. Additionally, the code is set to include Red and Green led lights that indicate wether the system 
-// is running or if it has stopped/error. 
+// has been running for real time. 
+
 
 
 #include <LiquidCrystal.h>
@@ -13,9 +13,7 @@
 LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
 
 
-// -------------------------
 // Pins
-// -------------------------
 const int STEP_PIN = A1;
 const int DIR_PIN  = A2;
 
@@ -24,14 +22,12 @@ const int GREEN_LED = A3;
 const int RED_LED   = A4;
 
 
-// Your working motion directions
+// Motion directions
 const bool DIR_BACKWARD = LOW;
 const bool DIR_FORWARD  = HIGH;
 
 
-// -------------------------
 // Button definitions
-// -------------------------
 #define btnRIGHT  0
 #define btnUP     1
 #define btnDOWN   2
@@ -40,12 +36,15 @@ const bool DIR_FORWARD  = HIGH;
 #define btnNONE   5
 
 
-// -------------------------
 // User-adjustable settings
-// -------------------------
-long stretchSteps = 200;
-float targetFrequencyHz = 0.5;
-int durationMinutes = 1;
+float targetStrainPercent = 5.0;   // 1.0 to 10.0%
+float targetFrequencyHz = 0.5;     // 0.1 to 2.0 Hz
+int durationMinutes = 5;           // 5 to 240 min
+
+
+// Calibration constants
+float gaugeLengthMm = 60.00;        // initial membrane gauge length, our PDMS is 90mm, chamber, 60mm
+float mmPerStep = 0.0054;          // avg calculated of per step
 
 
 // fixed pause at each end
@@ -53,19 +52,16 @@ int endPauseMs = 300;
 
 
 // internally calculated
+long stretchSteps = 0;
 int stepDelayMicros = 2500;
 
 
-// -------------------------
 // State
-// -------------------------
-int menuIndex = 0;   // 0=STEPS, 1=FREQ, 2=DURATION, 3=RUN
+int menuIndex = 0;   // 0=STRAIN, 1=FREQ, 2=DURATION, 3=RUN
 bool running = false;
 
 
-// -------------------------
-// Read buttons (calibrated to your shield)
-// -------------------------
+// Button reader
 int read_LCD_buttons() {
  int adc_key_in = analogRead(A0);
 
@@ -90,29 +86,30 @@ void waitForRelease() {
 }
 
 
-// -------------------------
+// Strain-to-steps conversion
+void updateStretchStepsFromStrain() {
+ float requiredDisplacementMm = gaugeLengthMm * (targetStrainPercent / 100.0);
+ stretchSteps = (long)(requiredDisplacementMm / mmPerStep);
+
+
+ if (stretchSteps < 1) stretchSteps = 1;
+}
+
+
 // Frequency-to-delay conversion
-// -------------------------
 void updateStepDelayFromFrequency() {
- // Total cycle time in microseconds = 1/frequency
  float cycleTimeUs = 1000000.0 / targetFrequencyHz;
-
-
- // subtract fixed pauses at both ends
  float motionTimeUs = cycleTimeUs - (2.0 * endPauseMs * 1000.0);
 
 
- // avoid invalid/negative values
  if (motionTimeUs < 4.0 * stretchSteps * 300.0) {
    motionTimeUs = 4.0 * stretchSteps * 300.0;
  }
 
 
- // Solve for delayMicroseconds per half pulse
  stepDelayMicros = (int)(motionTimeUs / (4.0 * stretchSteps));
 
 
- // clamp to a safe range
  if (stepDelayMicros < 300) stepDelayMicros = 300;
  if (stepDelayMicros > 10000) stepDelayMicros = 10000;
 }
@@ -125,12 +122,10 @@ float getActualFrequencyHz() {
 }
 
 
-// -------------------------
 // Motor functions
-// -------------------------
 void moveSteps(long numSteps, bool dir) {
  digitalWrite(DIR_PIN, dir);
- delay(300);  // reliable direction settling
+ delay(300);
 
 
  for (long i = 0; i < numSteps; i++) {
@@ -142,9 +137,7 @@ void moveSteps(long numSteps, bool dir) {
 }
 
 
-// -------------------------
 // LCD menu
-// -------------------------
 void showMenu() {
  lcd.clear();
 
@@ -152,10 +145,10 @@ void showMenu() {
  switch (menuIndex) {
    case 0:
      lcd.setCursor(0, 0);
-     lcd.print(">STEPS");
+     lcd.print(">STRAIN");
      lcd.setCursor(0, 1);
-     lcd.print(stretchSteps);
-     lcd.print(" steps");
+     lcd.print(targetStrainPercent, 1);
+     lcd.print("%");
      break;
 
 
@@ -189,9 +182,7 @@ void showMenu() {
 }
 
 
-// -------------------------
 // Setup
-// -------------------------
 void setup() {
  for (int i = 4; i < 10; i++) {
    pinMode(i, OUTPUT);
@@ -213,6 +204,7 @@ void setup() {
  lcd.begin(16, 2);
 
 
+ updateStretchStepsFromStrain();
  updateStepDelayFromFrequency();
 
 
@@ -220,7 +212,7 @@ void setup() {
  lcd.setCursor(0, 0);
  lcd.print("OsteoStretch");
  lcd.setCursor(0, 1);
- lcd.print("Freq control");
+ lcd.print("Strain control");
  delay(1200);
 
 
@@ -228,9 +220,7 @@ void setup() {
 }
 
 
-// -------------------------
 // Main loop
-// -------------------------
 void loop() {
  if (!running) {
    int button = read_LCD_buttons();
@@ -254,19 +244,20 @@ void loop() {
 
    if (button == btnUP) {
      if (menuIndex == 0) {
-       stretchSteps += 50;
-       if (stretchSteps > 5000) stretchSteps = 5000;
+       targetStrainPercent += 0.5;
+       if (targetStrainPercent > 10.0) targetStrainPercent = 10.0;
      }
      else if (menuIndex == 1) {
        targetFrequencyHz += 0.1;
        if (targetFrequencyHz > 2.0) targetFrequencyHz = 2.0;
      }
      else if (menuIndex == 2) {
-       durationMinutes += 1;
-       if (durationMinutes > 240) durationMinutes = 240;
+       durationMinutes += 5;
+       if (durationMinutes > 120) durationMinutes = 120;
      }
 
 
+     updateStretchStepsFromStrain();
      updateStepDelayFromFrequency();
      showMenu();
      waitForRelease();
@@ -275,19 +266,20 @@ void loop() {
 
    if (button == btnDOWN) {
      if (menuIndex == 0) {
-       stretchSteps -= 50;
-       if (stretchSteps < 50) stretchSteps = 50;
+       targetStrainPercent -= 0.5;
+       if (targetStrainPercent < 1.0) targetStrainPercent = 1.0;
      }
      else if (menuIndex == 1) {
        targetFrequencyHz -= 0.1;
        if (targetFrequencyHz < 0.1) targetFrequencyHz = 0.1;
      }
      else if (menuIndex == 2) {
-       durationMinutes -= 1;
-       if (durationMinutes < 1) durationMinutes = 1;
+       durationMinutes -= 5;
+       if (durationMinutes < 5) durationMinutes = 5;
      }
 
 
+     updateStretchStepsFromStrain();
      updateStepDelayFromFrequency();
      showMenu();
      waitForRelease();
@@ -302,93 +294,80 @@ void loop() {
 
 
  if (running) {
- digitalWrite(GREEN_LED, HIGH);
- digitalWrite(RED_LED, LOW);
+   digitalWrite(GREEN_LED, HIGH);
+   digitalWrite(RED_LED, LOW);
 
 
- unsigned long totalRunMs = (unsigned long)durationMinutes * 60UL * 1000UL;
- unsigned long startTime = millis();
+   unsigned long totalRunMs = (unsigned long)durationMinutes * 60UL * 1000UL;
+   unsigned long startTime = millis();
+   long cycleCount = 0;
 
 
- long cycleCount = 0;
+   lcd.clear();
+   lcd.setCursor(0, 0);
+   lcd.print("Running...");
+   delay(500);
 
 
- lcd.clear();
- lcd.setCursor(0, 0);
- lcd.print("Running...");
- delay(500);
+   while (millis() - startTime < totalRunMs) {
+     // backward from zero
+     moveSteps(stretchSteps, DIR_BACKWARD);
+     delay(endPauseMs);
 
 
- while (millis() - startTime < totalRunMs) {
+     // forward back to zero
+     moveSteps(stretchSteps, DIR_FORWARD);
+     delay(endPauseMs);
 
 
-   // -------- BACKWARD --------
-   moveSteps(stretchSteps, DIR_BACKWARD);
-   delay(endPauseMs);
+     cycleCount++;
 
 
-   // -------- FORWARD --------
-   moveSteps(stretchSteps, DIR_FORWARD);
-   delay(endPauseMs);
+     unsigned long elapsedMs = millis() - startTime;
+     int seconds = (elapsedMs / 1000) % 60;
+     int minutes = (elapsedMs / 60000);
 
 
-   cycleCount++;
+     lcd.setCursor(0, 1);
+     lcd.print("T:");
 
 
-   // -------- UPDATE DISPLAY --------
-   unsigned long elapsedMs = millis() - startTime;
-   int seconds = (elapsedMs / 1000) % 60;
-   int minutes = (elapsedMs / 60000);
+     if (minutes < 10) lcd.print("0");
+     lcd.print(minutes);
+     lcd.print(":");
 
 
-   lcd.setCursor(0, 1);
+     if (seconds < 10) lcd.print("0");
+     lcd.print(seconds);
 
 
-   // format: T:MM:SS C:##
-   lcd.print("T:");
+     lcd.print(" C:");
+     lcd.print(cycleCount);
+     lcd.print("   ");
 
 
-   if (minutes < 10) lcd.print("0");
-   lcd.print(minutes);
-   lcd.print(":");
-
-
-   if (seconds < 10) lcd.print("0");
-   lcd.print(seconds);
-
-
-   lcd.print(" C:");
-   lcd.print(cycleCount);
-
-
-   // clear trailing characters if count shrinks
-   lcd.print("   ");
-
-
-   // -------- STOP CHECK --------
-   if (read_LCD_buttons() == btnSELECT) {
-     waitForRelease();
-     break;
+     if (read_LCD_buttons() == btnSELECT) {
+       waitForRelease();
+       break;
+     }
    }
+
+
+   digitalWrite(GREEN_LED, LOW);
+   digitalWrite(RED_LED, HIGH);
+
+
+   lcd.clear();
+   lcd.setCursor(0, 0);
+   lcd.print("Finished");
+   lcd.setCursor(0, 1);
+   lcd.print("Cycles:");
+   lcd.print(cycleCount);
+   delay(1500);
+
+
+   running = false;
+   showMenu();
  }
-
-
- digitalWrite(GREEN_LED, LOW);
- digitalWrite(RED_LED, HIGH);
-
-
- lcd.clear();
- lcd.setCursor(0, 0);
- lcd.print("Finished");
- lcd.setCursor(0, 1);
- lcd.print("Cycles:");
- lcd.print(cycleCount);
- delay(1500);
-
-
- running = false;
- showMenu();
-
-
 }
-}
+
